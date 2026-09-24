@@ -87,6 +87,24 @@ def betti_ranks(raw_simplices, t):
     return beta0, beta1
 
 
+def dynamic_betti(simplices):
+    """Betti numbers (beta0, beta1) of a bare (unfiltered) complex.
+
+    ``simplices`` is any iterable of vertex tuples (length 1..3).  Pure
+    rank-nullity over GF(2) on independently built boundary maps; shares no
+    code with :mod:`pershom`.
+    """
+    verts = [tuple(v) for v in simplices]
+    V = [v for v in verts if len(v) == 1]
+    E = [v for v in verts if len(v) == 2]
+    F = [v for v in verts if len(v) == 3]
+    d1 = [edge_boundary(e) for e in E]
+    d2 = [triangle_boundary(t) for t in F]
+    r1 = gf2_rank(d1)
+    r2 = gf2_rank(d2)
+    return len(V) - r1, len(E) - r1 - r2
+
+
 def betti_union_find(raw_simplices, t):
     """Independent beta0 via plain union-find."""
     parent = {}

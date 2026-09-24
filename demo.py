@@ -15,6 +15,9 @@ network or third-party package is used.
 from __future__ import annotations
 
 from pershom import (
+    ADD,
+    REMOVE,
+    DynamicComplex,
     PersistenceInputError,
     check_certificate,
     compute_persistence,
@@ -121,6 +124,74 @@ def show_rejection():
     raise AssertionError("invalid complex was unexpectedly accepted")
 
 
+def show_dynamic():
+    print("=" * 72)
+    print("Dynamic complex: add/remove events with per-step Betti numbers")
+    print("=" * 72)
+    cx = DynamicComplex()
+    script = [
+        (ADD, (0,)), (ADD, (1,)), (ADD, (2,)),
+        (ADD, (0, 1)), (ADD, (1, 2)),
+        (ADD, (0, 2)),      # closes the ring: H1 is born
+        (ADD, (0, 1, 2)),   # filled: H1 dies
+        (REMOVE, (0, 1, 2)),  # face deleted: the hole reopens
+        (REMOVE, (0, 2)),     # edge deleted: ring unravels to a path
+    ]
+    print("\nApplying a fixed event script; Betti numbers are recomputed "
+          "from scratch after every event:")
+    for step in cx.apply(script):
+        print(f"  {step.event:6s} d{step.dimension} {str(step.vertices):10s}"
+              f" -> beta0={step.betti[0]}, beta1={step.betti[1]}")
+    print(f"\nFinal state: {cx!r}")
+
+    print("\nAtomic rejection boundary: rebuild the filled triangle, then")
+    print("try to delete an edge whose triangle coface is still present.")
+    cx.apply([
+        (ADD, (0, 2)),
+        (ADD, (0, 1, 2)),
+    ])
+    print(f"  state before illegal delete: {cx!r}")
+    try:
+        cx.remove((0, 1))
+    except PersistenceInputError as exc:
+        print(f"  PersistenceInputError: reason={exc.reason}")
+        print(f"  message: {exc}")
+        print(f"  state after rejection (unchanged): {cx!r}")
+        assert (0, 1) in cx and cx.betti() == (1, 0)
+    else:
+        raise AssertionError("edge with a live coface was unexpectedly removed")
+
+    print("\nTransactional batch: a batch whose last event is illegal is")
+    print("refused as a whole -- no partial application.")
+    batch = [
+        (ADD, (10,)),
+        (ADD, (11,)),
+        (ADD, (10, 11)),
+        (REMOVE, (0, 1)),   # illegal: coface (0,1,2) still present
+    ]
+    try:
+        cx.apply(batch)
+    except PersistenceInputError as exc:
+        print(f"  batch rejected at event index {exc.index}: "
+              f"reason={exc.reason}")
+        print(f"  vertex (10,) present afterwards? {(10,) in cx} "
+              f"(must be False: nothing was applied)")
+        assert (10,) not in cx and (11,) not in cx
+    else:
+        raise AssertionError("illegal batch was unexpectedly applied")
+
+    print("\nLegal teardown: remove the face first, then its edges.")
+    for step in cx.apply([
+        (REMOVE, (0, 1, 2)),
+        (REMOVE, (0, 1)),
+        (REMOVE, (1, 2)),
+        (REMOVE, (0, 2)),
+    ]):
+        print(f"  {step.event:6s} d{step.dimension} {str(step.vertices):10s}"
+              f" -> beta0={step.betti[0]}, beta1={step.betti[1]}")
+    print(f"  final: {cx!r}\n")
+
+
 def main():
     print("pershom demo - persistence homology pairing with GF(2) chains\n")
     show("Example 1: triangle ring born at t=1, filled (dies) at t=2",
@@ -128,6 +199,7 @@ def main():
     show("Example 2: two disjoint rings; one filled at t=2, one stays open",
          two_disjoint_rings())
     show_rejection()
+    show_dynamic()
     print("\nDemo finished.")
 
 
