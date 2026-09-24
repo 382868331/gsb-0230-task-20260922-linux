@@ -11,8 +11,16 @@ NaN/+-infinity are rejected). At most 300 simplices are accepted.
 
 Output: a :class:`Persistence` with the filtration-ordered cells, H0/H1 bars
 and GF(2) representative chains for every finite H1 bar.
+
+Dynamic updates (this iteration):
+
+    DynamicComplex(simplices=None)  -- mutable face-closed complex
+        .add(vertices, filtration)  / .remove(vertices)   (atomic)
+        .betti() -> (beta0, beta1)  (full recompute per step)
+        .simplices() / .persistence() / len() / ``in``
 """
 
+from .dynamic import DynamicComplex
 from .persistence import (
     Bar,
     Cell,
@@ -28,6 +36,7 @@ from .persistence import (
 __all__ = [
     "Bar",
     "Cell",
+    "DynamicComplex",
     "INF",
     "Persistence",
     "CertificateError",
@@ -37,4 +46,4 @@ __all__ = [
     "compute_persistence",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

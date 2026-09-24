@@ -1,9 +1,14 @@
-# pershom — 带方向链证书的持久同调配对（GF(2)，H0/H1）
+# pershom — 带方向链证书的持久同调配对 + 动态增删复形（GF(2)，H0/H1）
 
 离线、确定性、仅依赖 Python 标准库的持久同调计算模块：对顶点/边/三角形
 过滤复形，在 **GF(2)** 上建立边界矩阵，用标准**最低位 pivot**（lowest-one /
 bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条有限 H1 条**
 同时交付可独立检验的**出生环 1-链**与**死亡填充 2-链**证书。
+
+本迭代新增**动态增删**能力：`DynamicComplex` 接受单形逐个**插入 / 删除**
+事件（删除时若共面仍存在则**原子拒绝**），每一步用同一边界矩阵构造
+**全量重算** H0/H1 维数（β0、β1）。原有静态入口 `compute_persistence`
+等完全保留、行为不变。
 
 - Python 版本：**Python 3.14.7**（Linux 原生验证；任何 3.10+ 理论上可运行，
   但只按 3.14.7 交付与验收）
@@ -17,10 +22,12 @@ bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条
 pershom/             被测库（核心算法从零实现）
   __init__.py        公开接口
   persistence.py     输入校验、边界矩阵、pivot 约化、配对、证书与验证
+  dynamic.py         动态增删复形（每步全量重算 H0/H1 维数）
 tests/
   reference.py       独立参考：GF(2) 高斯消元 + 秩不变量 + 并查集（不 import pershom）
-  test_persistence.py
-demo.py              固定输入演示（正常结果 + 一个真实触发的拒绝）
+  test_persistence.py  静态持久同调测试
+  test_dynamic.py      动态增删测试（正常 / 边界 / 失败用例）
+demo.py              固定输入演示（静态正常结果 + 真实拒绝 + 动态增删全流程）
 ```
 
 ## 运行命令
@@ -29,7 +36,7 @@ demo.py              固定输入演示（正常结果 + 一个真实触发的�
 # 必要测试（验收命令）
 python -m unittest discover -s tests -v
 
-# 演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep、无预录结果）
+# 演示（约 0.05 秒，远小于 90 秒预算；真实计算，无 sleep、无预录结果）
 python demo.py
 ```
 
@@ -98,7 +105,43 @@ result = compute_persistence(simplices)
 
 即：`∂(death_chain) = birth_chain`、`∂(birth_chain) = 0`。测试中的
 `tests/reference.py` 用第二份独立实现重复该检验，并额外把整条条形码与
-“秩不变量四拐角公式 + 独立 GF(2) 高斯消元 + 并查集 β0”逐一比对。
+"秩不变量四拐角公式 + 独立 GF(2) 高斯消元 + 并查集 β0"逐一比对。
+
+## 动态增删接口（本迭代新增）
+
+```python
+from pershom import DynamicComplex
+
+dyn = DynamicComplex()            # 空复形；也可 DynamicComplex(simplices)
+dyn.add((0, 1), 1)                # 插入一个单形（原子）
+dyn.remove((0, 1))                # 删除一个单形（原子，可能拒绝）
+b0, b1 = dyn.betti()              # 当前复形的 H0/H1 维数（全量重算）
+```
+
+- **构造**：`DynamicComplex()` 从空复形开始；`DynamicComplex(simplices)`
+  用与 `compute_persistence` 完全相同的静态契约校验初始输入（复用同一
+  校验代码），非法输入在构造期整体拒绝。
+- **`add(vertices, filtration)`**：顶点与过滤值的校验规则与静态入口一致
+  （`bad_vertex_id`、`unsorted_vertices`、`bad_filtration_type`、
+  `non_finite_filtration` 等）；单形已存在报 `duplicate_simplex`；面必须
+  已全部存在（`missing_face`）且过滤值 `<=` 新单形
+  （`face_filtration_order`）；复形总规模仍受 **300 个单形**上限约束
+  （`too_many_simplices`）。
+- **`remove(vertices)`**：单形不存在报 `missing_simplex`；**只要还有
+  共面（coface，即包含它的更高一维单形）存在于复形中，就整体拒绝**
+  （`has_cofaces`，错误信息列出共面），复形保持原样。由于面闭合是不变
+  量，检查直接共面即可排除任意维数的共面。
+- **原子性**：`add` / `remove` 都先完成全部校验再改动内部状态；任何
+  拒绝都不会留下半更新的复形（测试逐条断言拒绝前后快照一致）。
+- **`betti() -> (beta0, beta1)`**：每一步**全量重算**——用现有
+  `_build_boundary` 构造边界列，GF(2) 秩给出
+  `β0 = n0 − rank(∂1)`、`β1 = n1 − rank(∂1) − rank(∂2)`。空复形返回
+  `(0, 0)`。本迭代**不做**之字形（zigzag）区间分解，也不维护跨事件的
+  链证书。
+- **辅助**：`dyn.simplices()` 返回按全序排列的 `(vertices, filtration)`
+  快照；`dyn.persistence()` 等价于 `compute_persistence(dyn.simplices())`
+  （空复形按静态契约抛 `empty_input`），是通往原静态入口的桥；
+  `len(dyn)`、`vertices in dyn` 可用。
 
 ## 错误语义
 
@@ -119,19 +162,22 @@ result = compute_persistence(simplices)
 | `non_finite_filtration` | `NaN`、`+inf`、`-inf` |
 | `missing_face` | 顶点面/边面不存在 |
 | `face_filtration_order` | 面过滤值大于单形过滤值 |
-| `duplicate_simplex` | 同一单形重复给出 |
-| `too_many_simplices` | 超过 300 个单形（报错定位到第 301 项） |
-| `empty_input` | 空输入 |
+| `duplicate_simplex` | 同一单形重复给出（静态输入或 `add` 已存在的单形） |
+| `too_many_simplices` | 超过 300 个单形（静态报错定位到第 301 项；动态为复形已满时的 `add`） |
+| `empty_input` | 空输入（含对空 `DynamicComplex` 调用 `persistence()`） |
 | `bad_threshold` | Betti 查询阈值不是有限数 |
+| `missing_simplex` | `DynamicComplex.remove` 的单形不在复形中 |
+| `has_cofaces` | `DynamicComplex.remove` 的单形仍有共面存在，删除被原子拒绝 |
 
 其他固定约定：
 
 - **数值策略**：`NaN`/`Infinity` 一律拒绝；**整数参数（顶点 id、以及
   bool 形态的过滤值）拒绝 `bool`**。
 - **原子性**：`compute_persistence` 是纯函数，结果在局部状态中完整构造；
-  任何校验失败都在返回前抛出，不存在“部分结果”或对输入的修改。本库没有
-  有状态/批次写操作，也没有带搜索预算的算法——约化是确定性有限过程，
-  因此不存在“预算耗尽”与“证明无解”的区分需求；非法输入与计算失败通过
+  任何校验失败都在返回前抛出，不存在"部分结果"或对输入的修改。
+  `DynamicComplex.add` / `remove` 同样先校验后变更，拒绝时复形保持
+  原样。本库没有带搜索预算的算法——约化是确定性有限过程，
+  因此不存在"预算耗尽"与"证明无解"的区分需求；非法输入与计算失败通过
   异常类型显式区分。
 - **浮点误差口径**：本库**不做任何浮点算术**，不过滤、不合并近似值、
   不使用 epsilon。过滤值只参与 Python 原生比较（`==`、`<=`、`<`）并
@@ -164,11 +210,14 @@ result = compute_persistence(simplices)
 
 - 仅维数 0、1、2（顶点/边/三角形）；无四面体及更高维。
 - 仅 GF(2) 系数；不提供整数/任意域系数、定向符号或同调群扭结信息。
-- 至多 300 个单形；超限拒绝而非分页处理。
+- 至多 300 个单形；超限拒绝而非分页处理（静态输入与动态复形同限）。
 - 只计算普通（非扩张）持续同调的区间与链代表元；不输出
   persistence diagram 图像、瓶颈/Wasserstein 距离、上同调、zigzag、
   多参数/圆形/层级持续同调，也不声称与任何行业文件格式
   （如 dipha/perseus 二进制格式）兼容。
+- 动态接口（`DynamicComplex`）每步**全量重算** Betti 数，不做增量/
+  之字形区间分解，不维护跨事件的条形码或链证书；删除事件对持久区间
+  的影响请通过对每步快照调用 `persistence()` 获得。
 - 本质类只给 `inf` 终点，不附链（GF(2) 下本质 H1 代表元可由边环另行
   枚举，当前接口未暴露）。
 - 链代表元依赖固定全序（同值维数序+顶点序）；换序可能得到不同但同调的
@@ -190,4 +239,27 @@ print(p.betti_at(2))          # (1, 0)
 bar = p.h1_bars[0]            # H1 [1, 2)
 print(p.chain_vertices(bar.birth_chain))  # 三角形的三条边
 print(p.chain_vertices(bar.death_chain))  # 填充三角形
+```
+
+动态增删：
+
+```python
+from pershom import DynamicComplex, PersistenceInputError
+
+dyn = DynamicComplex()
+for v in range(3):
+    dyn.add((v,), 0)
+for e in ((0, 1), (1, 2), (0, 2)):
+    dyn.add(e, 1)
+print(dyn.betti())            # (1, 1) —— 环已成
+dyn.add((0, 1, 2), 2)
+print(dyn.betti())            # (1, 0) —— 洞被填
+dyn.remove((0, 1, 2))
+print(dyn.betti())            # (1, 1) —— 洞重新打开
+dyn.add((0, 1, 2), 2)         # 重新填洞
+try:
+    dyn.remove((0, 1))        # 边仍被三角形包含 -> 原子拒绝
+except PersistenceInputError as exc:
+    print(exc.reason)         # "has_cofaces"
+print(dyn.betti())            # (1, 0) —— 拒绝后状态不变
 ```

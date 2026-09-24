@@ -15,6 +15,7 @@ network or third-party package is used.
 from __future__ import annotations
 
 from pershom import (
+    DynamicComplex,
     PersistenceInputError,
     check_certificate,
     compute_persistence,
@@ -121,6 +122,63 @@ def show_rejection():
     raise AssertionError("invalid complex was unexpectedly accepted")
 
 
+def show_dynamic():
+    """Live insert/delete session: ring born, hole filled, face and edge
+    removed, plus two genuinely rejected updates."""
+    print("=" * 72)
+    print("Dynamic updates: add/remove events with per-step Betti numbers")
+    print("=" * 72)
+    dyn = DynamicComplex()
+    print("\n  start: empty complex, betti =", dyn.betti())
+
+    events = [
+        ("add", (0,), 0, "three vertices appear"),
+        ("add", (1,), 0, None),
+        ("add", (2,), 0, None),
+        ("add", (0, 1), 1, "edges close a ring at the third edge"),
+        ("add", (1, 2), 1, None),
+        ("add", (0, 2), 1, "ring complete -> beta1 becomes 1"),
+        ("add", (0, 1, 2), 2, "triangle fills the hole -> beta1 back to 0"),
+        ("remove", (0, 1, 2), None, "face deleted -> hole reopens"),
+        ("remove", (0, 2), None, "edge deleted -> ring breaks into a path"),
+    ]
+    for op, verts, filt, note in events:
+        if op == "add":
+            dyn.add(verts, filt)
+            desc = f"add    {str(verts):10s} @ {filt}"
+        else:
+            dyn.remove(verts)
+            desc = f"remove {verts!s:10s}"
+        b0, b1 = dyn.betti()
+        line = f"  {desc}   -> beta0={b0}, beta1={b1}"
+        if note:
+            line += f"   ({note})"
+        print(line)
+
+    print("\n  The same state through the original static entry point:")
+    top = max(f for _, f in dyn.simplices())
+    print(f"  compute_persistence(dyn.simplices()).betti_at({top}) =",
+          dyn.persistence().betti_at(top))
+
+    print("\n  Rejected updates (state stays intact):")
+    # 1) deleting an edge whose triangle coface still exists
+    dyn.add((0, 2), 1)        # rebuild the ring
+    dyn.add((0, 1, 2), 2)     # refill it
+    print(f"  refilled the triangle; betti = {dyn.betti()}")
+    try:
+        dyn.remove((0, 2))
+    except PersistenceInputError as exc:
+        print(f"  remove (0, 2)  -> {type(exc).__name__}: {exc}")
+    # 2) adding a duplicate simplex
+    try:
+        dyn.add((0, 2), 9)
+    except PersistenceInputError as exc:
+        print(f"  add (0, 2) @ 9 -> {type(exc).__name__}: {exc}")
+    print(f"  after both rejections the complex is unchanged: "
+          f"betti = {dyn.betti()}, simplices = {len(dyn)}")
+    print()
+
+
 def main():
     print("pershom demo - persistence homology pairing with GF(2) chains\n")
     show("Example 1: triangle ring born at t=1, filled (dies) at t=2",
@@ -128,6 +186,7 @@ def main():
     show("Example 2: two disjoint rings; one filled at t=2, one stays open",
          two_disjoint_rings())
     show_rejection()
+    show_dynamic()
     print("\nDemo finished.")
 
 
