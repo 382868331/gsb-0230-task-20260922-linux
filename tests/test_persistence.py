@@ -590,3 +590,152 @@ class TestRandomizedCrossCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def two_rings_shared_edge():
+    """Two triangle rings sharing edge (0, 2); both stay open forever."""
+    return [
+        ((0,), 0), ((1,), 0), ((2,), 0), ((3,), 0),
+        ((0, 1), 1), ((1, 2), 1), ((0, 2), 1), ((2, 3), 1), ((0, 3), 1),
+    ]
+
+
+def check_slice_independently(test_case, data, res, t):
+    """Re-derive the slice check from raw input with reference GF(2) ranks.
+
+    Builds the boundary matrices of the t-subcomplex from ``data`` alone
+    and asserts closure, independence modulo boundaries and the count of
+    the cycles returned by ``res.slice_cycles(t)``.
+    """
+    sliced = res.slice_cycles(t)
+    edges = sorted(
+        {tuple(v) for v, f in data if len(v) == 2 and f <= t}
+    )
+    tris = sorted(
+        {tuple(v) for v, f in data if len(v) == 3 and f <= t}
+    )
+    edge_set = set(edges)
+
+    cycle_sets = []
+    for gen in sliced.generators:
+        cyc = res.chain_vertices(gen.cycle)
+        # every edge of the cycle already exists at t (no future chains)
+        for e in cyc:
+            test_case.assertIn(e, edge_set)
+        # closure: mod-2 boundary is zero
+        parity = {}
+        for a, b in cyc:
+            parity[a] = parity.get(a, 0) ^ 1
+            parity[b] = parity.get(b, 0) ^ 1
+        test_case.assertFalse([v for v, p in parity.items() if p])
+        cycle_sets.append(frozenset(cyc))
+        # correspondence with the original interval
+        test_case.assertTrue(gen.bar.alive_at(t))
+        test_case.assertFalse(gen.bar.zero_length)
+        test_case.assertEqual(gen.essential, gen.bar.death_index is None)
+    test_case.assertEqual(len(set(cycle_sets)), len(cycle_sets))
+
+    def tri_boundary(tri):
+        a, b, c = tri
+        return frozenset([(b, c), (a, c), (a, b)])
+
+    bounds = [tri_boundary(tri) for tri in tris]
+    r_b = ref.gf2_rank(bounds)
+    # linear independence modulo boundaries
+    test_case.assertEqual(
+        ref.gf2_rank(bounds + cycle_sets), r_b + len(cycle_sets)
+    )
+    # count matches the independently computed beta1
+    test_case.assertEqual(len(cycle_sets), ref.betti_ranks(data, t)[1])
+    return sliced
+
+
+class TestSliceCycles(unittest.TestCase):
+    def test_ring_closes_then_filled(self):
+        data = ref.triangle_ring_example()
+        res = compute_persistence(data)
+        self.assertEqual(len(res.slice_cycles(0)), 0)
+        sliced = check_slice_independently(self, data, res, 1)
+        self.assertEqual(len(sliced), 1)
+        gen = sliced.generators[0]
+        self.assertFalse(gen.essential)
+        self.assertIs(gen.bar, res.h1_bars[0])
+        self.assertEqual(
+            sorted(res.chain_vertices(gen.cycle)),
+            [(0, 1), (0, 2), (1, 2)],
+        )
+        # half-open death: at t=2 the batch with the fill is in, ring gone
+        self.assertEqual(len(res.slice_cycles(2)), 0)
+        self.assertEqual(len(res.slice_cycles(99)), 0)
+
+    def test_two_rings_sharing_one_edge(self):
+        data = two_rings_shared_edge()
+        res = compute_persistence(data)
+        self.assertEqual(len(res.h1_bars), 2)
+        sliced = check_slice_independently(self, data, res, 1)
+        self.assertEqual(len(sliced), 2)
+        self.assertTrue(all(g.essential for g in sliced))
+        cycles = [set(res.chain_vertices(g.cycle)) for g in sliced]
+        # the two generators share exactly the edge (0, 2)
+        self.assertEqual(cycles[0] & cycles[1], {(0, 2)})
+        for cyc in cycles:
+            self.assertEqual(len(cyc), 3)
+
+    def test_same_value_batch_zero_length_occupies_nothing(self):
+        data = [
+            ((0,), 0), ((1,), 0), ((2,), 0),
+            ((0, 1), 0), ((0, 2), 0), ((1, 2), 0),
+            ((0, 1, 2), 0),
+        ]
+        res = compute_persistence(data)
+        sliced = check_slice_independently(self, data, res, 0)
+        self.assertEqual(len(sliced), 0)
+        # the zero-length bar is reported separately, not as a generator
+        self.assertEqual(len(sliced.zero_length_bars), 1)
+        self.assertTrue(sliced.zero_length_bars[0].zero_length)
+
+    def test_essential_and_finite_tracked_separately(self):
+        data = ref.two_rings_one_filled()
+        res = compute_persistence(data)
+        at_one = check_slice_independently(self, data, res, 1)
+        self.assertEqual(
+            sorted(g.essential for g in at_one), [False, True]
+        )
+        at_two = check_slice_independently(self, data, res, 2)
+        self.assertEqual(len(at_two), 1)
+        self.assertTrue(at_two.generators[0].essential)
+        # essential representative contains its birth edge and is a cycle
+        gen = at_two.generators[0]
+        self.assertIn(gen.bar.birth_index, gen.cycle)
+
+    def test_slice_does_not_mutate_persistence(self):
+        data = ref.filled_grid_with_hole()
+        res = compute_persistence(data)
+        before = list(res.bars)
+        for t in (0, 1, 2, 3, 100):
+            res.slice_cycles(t)
+        self.assertEqual(list(res.bars), before)
+
+    def test_grid_with_hole_every_threshold(self):
+        data = ref.filled_grid_with_hole()
+        res = compute_persistence(data)
+        for t in sorted({f for _, f in data}):
+            with self.subTest(t=t):
+                check_slice_independently(self, data, res, t)
+
+    def test_slice_cycles_randomized_cross_check(self):
+        rng = random.Random(20260925)
+        for trial in range(60):
+            with self.subTest(trial=trial):
+                data = TestRandomizedCrossCheck._random_complex(
+                    rng, rng.randint(2, 7), rng.randint(1, 4)
+                )
+                res = compute_persistence(data)
+                for t in sorted({f for _, f in data}):
+                    check_slice_independently(self, data, res, t)
+
+    def test_slice_bad_threshold(self):
+        res = compute_persistence([((0,), 0)])
+        for bad in (float("nan"), float("inf"), "1", True):
+            with self.assertRaises(PersistenceInputError):
+                res.slice_cycles(bad)

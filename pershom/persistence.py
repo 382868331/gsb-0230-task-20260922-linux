@@ -18,6 +18,8 @@ __all__ = [
     "MAX_SIMPLICES",
     "Cell",
     "Bar",
+    "SlicedCycle",
+    "SliceCycles",
     "Persistence",
     "PersistenceError",
     "PersistenceInputError",
@@ -118,6 +120,67 @@ class _Record(NamedTuple):
     dimension: int
     vertices: tuple[int, ...]
     filtration: float | int
+
+
+@dataclass(frozen=True)
+class SlicedCycle:
+    """One H1 generator of the threshold subcomplex, tied to its bar.
+
+    Attributes:
+        bar: the original persistence Bar this generator corresponds to
+            (its [birth, death) interval contains the slice threshold).
+        cycle: sorted tuple of Persistence.cells edge indices; a GF(2)
+            1-cycle built only from edges already present at the slice
+            threshold (never from the future death-filling chain).
+        essential: True when bar is an infinite (essential) bar; the
+            cycle is then the reduced representative tracked through the
+            change-of-basis mask of the column reduction (a homology-
+            preserving transformation of the original birth cycle).
+    """
+
+    bar: Bar
+    cycle: tuple[int, ...]
+    essential: bool
+
+    def __repr__(self) -> str:
+        kind = 'essential' if self.essential else 'finite'
+        return (
+            f'SlicedCycle({kind}, bar=[{self.bar.birth!r}, '
+            f'{self.bar.death!r}), edges={list(self.cycle)})'
+        )
+
+
+class SliceCycles:
+    """Result of Persistence.slice_cycles.
+
+    Attributes:
+        threshold: the slice value t.
+        generators: tuple of SlicedCycle, one per H1 class alive at t
+            (its length equals betti_at(t)[1]).
+        zero_length_bars: zero-length H1 bars with birth <= t.  They are
+            listed separately for traceability and never occupy a
+            generator slot: the whole same-value batch is in the
+            subcomplex, so a class born and killed inside one batch
+            contributes nothing.
+    """
+
+    def __init__(self, threshold, generators, zero_length_bars):
+        self.threshold = threshold
+        self.generators: tuple[SlicedCycle, ...] = tuple(generators)
+        self.zero_length_bars: tuple[Bar, ...] = tuple(zero_length_bars)
+
+    def __iter__(self):
+        return iter(self.generators)
+
+    def __len__(self) -> int:
+        return len(self.generators)
+
+    def __repr__(self) -> str:
+        return (
+            f'SliceCycles(t={self.threshold!r}, '
+            f'generators={len(self.generators)}, '
+            f'zero_length={len(self.zero_length_bars)})'
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +364,21 @@ def _build_boundary(cells: list[Cell]) -> list[int]:
     return columns
 
 
+def _gf2_rank(vectors: Iterable[int]) -> int:
+    """Rank of GF(2) vectors given as Python-int bitsets."""
+    pivots: dict[int, int] = {}
+    for vec in vectors:
+        v = vec
+        while v:
+            pivot = v.bit_length() - 1
+            if pivot in pivots:
+                v ^= pivots[pivot]
+            else:
+                pivots[pivot] = v
+                break
+    return len(pivots)
+
+
 def _reduce(columns: list[int]) -> tuple[list[int], list[int], dict[int, int]]:
     """Classical left-to-right persistence reduction.
 
@@ -351,6 +429,10 @@ class Persistence:
         self.bars: tuple[Bar, ...] = tuple(bars)
         self.h0_bars: tuple[Bar, ...] = tuple(b for b in bars if b.dimension == 0)
         self.h1_bars: tuple[Bar, ...] = tuple(b for b in bars if b.dimension == 1)
+        # Reduction by-products kept for slice_cycles: combo[j] is the
+        # change-of-basis mask of column j (a 1-cycle when column j is a
+        # positive edge column).  Not part of the public contract.
+        self._combo: tuple[int, ...] | None = None
 
     # -- queries -----------------------------------------------------------
 
@@ -396,6 +478,133 @@ class Persistence:
     def chain_vertices(self, chain: Iterable[int]) -> list[tuple[int, ...]]:
         """Resolve a chain of cell indices to the listed vertex tuples."""
         return [self.cells[i].vertices for i in chain]
+
+    def slice_cycles(self, threshold) -> SliceCycles:
+        """H1 generators of the subcomplex with filtration <= threshold.
+
+        The subcomplex takes every cell with filtration <= threshold as
+        one atomic batch: all simplices sharing a filtration value are in
+        or out together, regardless of their internal tie-break order, so
+        a slice never observes half of a moment.
+
+        Returns a SliceCycles whose generators correspond one-to-one to
+        the H1 bars alive at the threshold (birth <= t < death).  Each
+        generator cycle uses only edges already present at the threshold:
+
+        * finite bars contribute their birth cycle (every edge of it has
+          filtration <= birth <= t by the filtration total order);
+        * essential (infinite) bars contribute the reduced representative
+          recovered from the change-of-basis mask of the birth column --
+          the homology-equivalent transformation accumulated while later
+          columns were reduced is exactly what that mask tracks;
+        * zero-length bars are reported separately in zero_length_bars
+          and never occupy a generator slot.
+
+        Before returning, the slice is checked against a boundary matrix
+        rebuilt from scratch for the threshold subcomplex: every cycle
+        must be closed, the cycles must be linearly independent modulo
+        boundaries, and their number must equal beta1 of the subcomplex.
+        A failure raises CertificateError instead of returning a bad
+        slice.  threshold must be a finite int/float.
+        """
+        if not _finite_number(threshold):
+            raise PersistenceInputError(
+                'bad_threshold',
+                'threshold must be a finite int or float',
+            )
+        generators: list[SlicedCycle] = []
+        for bar in self.h1_bars:
+            if bar.zero_length or not bar.alive_at(threshold):
+                continue
+            if bar.death_index is None:
+                mask = self._combo[bar.birth_index]
+                cycle = tuple(
+                    i for i in range(bar.birth_index + 1) if (mask >> i) & 1
+                )
+                generators.append(SlicedCycle(bar=bar, cycle=cycle, essential=True))
+            else:
+                generators.append(
+                    SlicedCycle(bar=bar, cycle=bar.birth_chain, essential=False)
+                )
+        zero_length = tuple(
+            b for b in self.h1_bars if b.zero_length and b.birth <= threshold
+        )
+        sliced = SliceCycles(threshold, generators, zero_length)
+        self._verify_slice(sliced)
+        return sliced
+
+    def _verify_slice(self, sliced: SliceCycles) -> None:
+        """Independently re-check a slice against a rebuilt boundary matrix.
+
+        Uses only cell vertex/filtration data and fresh GF(2) rank
+        computations -- never the reduction that produced the cycles.
+        """
+        t = sliced.threshold
+        cells = self.cells
+        verts = [c for c in cells if c.dimension == 0 and c.filtration <= t]
+        edges = [c for c in cells if c.dimension == 1 and c.filtration <= t]
+        tris = [c for c in cells if c.dimension == 2 and c.filtration <= t]
+        vpos = {c.vertices[0]: k for k, c in enumerate(verts)}
+        epos = {c.index: k for k, c in enumerate(edges)}
+        edge_by_verts = {c.vertices: c for c in edges}
+
+        cycle_vecs: list[int] = []
+        for gen in sliced.generators:
+            vec = 0
+            parity: dict[int, int] = {}
+            seen: set[int] = set()
+            for ei in gen.cycle:
+                cell = cells[ei]
+                if cell.dimension != 1:
+                    raise CertificateError(
+                        f'slice cycle contains cell {ei} of dimension '
+                        f'{cell.dimension}, expected an edge'
+                    )
+                if ei in seen:
+                    raise CertificateError(
+                        f'slice cycle lists edge {ei} twice'
+                    )
+                seen.add(ei)
+                if cell.filtration > t:
+                    raise CertificateError(
+                        f'slice cycle uses edge {cell.vertices!r} with '
+                        f'filtration {cell.filtration!r} > slice {t!r}'
+                    )
+                vec ^= 1 << epos[ei]
+                a, b = cell.vertices
+                parity[a] = parity.get(a, 0) ^ 1
+                parity[b] = parity.get(b, 0) ^ 1
+            odd = sorted(v for v, p in parity.items() if p)
+            if odd:
+                raise CertificateError(
+                    f'slice cycle is not closed: odd boundary at {odd}'
+                )
+            if not seen:
+                raise CertificateError('slice cycle is empty')
+            cycle_vecs.append(vec)
+
+        d1 = [
+            (1 << vpos[c.vertices[0]]) | (1 << vpos[c.vertices[1]])
+            for c in edges
+        ]
+        d2 = []
+        for c in tris:
+            vec = 0
+            for fv in _faces(c.vertices):
+                vec ^= 1 << epos[edge_by_verts[fv].index]
+            d2.append(vec)
+
+        rank_bounds = _gf2_rank(d2)
+        if _gf2_rank(d2 + cycle_vecs) != rank_bounds + len(cycle_vecs):
+            raise CertificateError(
+                'slice cycles are linearly dependent modulo boundaries'
+            )
+        beta1 = (len(edges) - _gf2_rank(d1)) - rank_bounds
+        if beta1 != len(sliced.generators):
+            raise CertificateError(
+                f'slice has {len(sliced.generators)} generators but the '
+                f'rebuilt boundary matrices give beta1={beta1}'
+            )
 
     def __repr__(self) -> str:
         return (
@@ -493,6 +702,7 @@ def compute_persistence(simplices) -> Persistence:
         )
     )
     result = Persistence(cells, bars)
+    result._combo = tuple(combo)
     # Self-check: every emitted finite H1 certificate must verify.  This
     # costs nothing at the supported scale and turns any internal bug into
     # a loud failure instead of a bad certificate.

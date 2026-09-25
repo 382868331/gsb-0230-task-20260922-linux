@@ -97,6 +97,24 @@ def show(title, data):
     return result
 
 
+def show_slices(title, data, thresholds):
+    print("=" * 72)
+    print(title)
+    print("=" * 72)
+    result = compute_persistence(data)
+    for t in thresholds:
+        sliced = result.slice_cycles(t)
+        print(f"\nslice at t={t!r}: {len(sliced)} H1 generator(s), "
+              f"beta1={result.betti_at(t)[1]}, "
+              f"zero-length bars set aside: {len(sliced.zero_length_bars)}")
+        for gen in sliced:
+            kind = "essential" if gen.essential else "finite   "
+            edges = result.chain_vertices(gen.cycle)
+            print(f"  [{kind}] bar [{gen.bar.birth!r}, "
+                  f"{_fmt_value(gen.bar.death)}) -> cycle edges {edges}")
+    print()
+
+
 def show_rejection():
     print("=" * 72)
     print("Error boundary (a triangle with a missing edge face is rejected)")
@@ -127,6 +145,9 @@ def main():
          triangle_ring_filled())
     show("Example 2: two disjoint rings; one filled at t=2, one stays open",
          two_disjoint_rings())
+    show_slices("Example 3: slice_cycles(t) on the two-ring complex "
+                "(one ring filled at t=2)",
+                two_disjoint_rings(), [1, 2])
     show_rejection()
     print("\nDemo finished.")
 

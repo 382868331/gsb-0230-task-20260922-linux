@@ -81,9 +81,34 @@ result = compute_persistence(simplices)
 - `result.betti_at(t) -> (beta0, beta1)`：过滤值 `<= t` 的子复形 Betti 数。
 - `result.betti_profile(thresholds=None)`：默认在每个不同过滤值处取样。
 - `result.chain_vertices(chain)`：把链下标翻译成顶点元组列表，便于检验。
+- `result.slice_cycles(t) -> SliceCycles`：过滤值 `<= t` 子复形的一组
+  H1 生成环及其与原持久区间的对应（详见下节）。
 - `check_certificate(result, bar) -> True`：用**只依赖单元顶点数据**的
   组合检查复核证书，失败抛 `CertificateError`。计算内部返回前也会对每条
   有限 H1 自动执行该校验（300 单形规模下成本可忽略）。
+
+### 阈值切片 `slice_cycles(t)`
+
+`slice_cycles(t)` 返回 `SliceCycles`：
+
+- `generators`：`SlicedCycle(bar, cycle, essential)` 元组，与 t 时刻存活
+  （`birth <= t < death`）的 H1 条一一对应；`bar` 即原持久区间，
+  `cycle` 为 GF(2) 边环（`cells` 下标）。生成元数量等于 `betti_at(t)[1]`。
+- `zero_length_bars`：同值整批“出生即死亡”的零长度 H1 条单独列出，
+  **不占**生成元名额（整批进入子复形后该类已不存在）。
+
+切片语义：
+
+- **整批原子性**：子复形按过滤值 `<= t` 整体截取，同值单形要么全在
+  要么全不在，内部 tie-break 序不会让接口看到半个时刻。
+- **只用当前边**：生成环全部由过滤值 `<= t` 的边组成，绝不使用未来
+  才出现的死亡填充链冒充此刻代表。有限条取其出生环（由过滤全序，
+  环上每条边过滤值 `<= birth <= t`）；无穷条取列约化换基掩码追踪到
+  的约化代表——原出生环在后续边界约化中被替换时，该掩码正是可追踪
+  的同调等价变换，且代表环包含其出生边。
+- **独立核验**：返回前用**重建的** t 子复形边界矩阵（只依赖单元顶点
+  数据、独立 GF(2) 秩计算）核对：每个环闭合、环之间模边界线性独立、
+  数量等于该子复形 β1；失败抛 `CertificateError` 而非返回坏切片。
 
 ### H1 链证书的精确含义
 
@@ -190,4 +215,10 @@ print(p.betti_at(2))          # (1, 0)
 bar = p.h1_bars[0]            # H1 [1, 2)
 print(p.chain_vertices(bar.birth_chain))  # 三角形的三条边
 print(p.chain_vertices(bar.death_chain))  # 填充三角形
+
+sliced = p.slice_cycles(1)    # t=1 时环还活着
+gen = sliced.generators[0]
+print(gen.essential)                       # False（有限条）
+print(p.chain_vertices(gen.cycle))         # 当前已存在的三条边组成的环
+print(p.slice_cycles(2).generators)        # () —— 填面后无生成环
 ```
