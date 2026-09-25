@@ -18,6 +18,7 @@ from pershom import (
     INF,
     CertificateError,
     PersistenceInputError,
+    SliceCycle,
     check_certificate,
     compute_persistence,
 )
@@ -586,6 +587,271 @@ class TestRandomizedCrossCheck(unittest.TestCase):
                 for b in other.bars
             ]
             self.assertEqual(sig, base_sig)
+
+
+
+def _shared_edge_two_cycles():
+    """Two 1-cycles sharing edge (1, 2); all edges at t=1, vertices at 0.
+
+    Cycle A = (0,1),(0,2),(1,2); cycle B = (1,2),(1,3),(2,3).
+    Hand count: 5 edges, rank(d1) = 3 (a spanning tree on 4 vertices),
+    no triangles -> beta1 = 5 - 3 = 2 at t=1.
+    """
+    return [
+        ((0,), 0), ((1,), 0), ((2,), 0), ((3,), 0),
+        ((0, 1), 1), ((0, 2), 1), ((1, 2), 1), ((1, 3), 1), ((2, 3), 1),
+    ]
+
+
+def _square_filled_at_two():
+    """4-cycle at t=1; diagonal and both filling triangles at t=2."""
+    return [
+        ((0,), 0), ((1,), 0), ((2,), 0), ((3,), 0),
+        ((0, 1), 1), ((1, 2), 1), ((2, 3), 1), ((0, 3), 1),
+        ((0, 2), 2),
+        ((0, 1, 2), 2), ((0, 2, 3), 2),
+    ]
+
+
+class TestSliceCyclesAnalytic(unittest.TestCase):
+    """Hand-computed slice_cycles examples."""
+
+    def test_triangle_ring_stepwise(self):
+        res = compute_persistence(ref.triangle_ring_example())
+        self.assertEqual(res.slice_cycles(0), ())
+        (sc,) = res.slice_cycles(1)
+        self.assertIsInstance(sc, SliceCycle)
+        self.assertEqual(
+            sorted(res.chain_vertices(sc.cycle)),
+            [(0, 1), (0, 2), (1, 2)],
+        )
+        self.assertFalse(sc.essential)
+        self.assertEqual((sc.birth, sc.death), (1, 2))
+        self.assertIs(sc.bar, res.h1_bars[0])
+        # The whole batch at t=2 (the triangle) closes the class.
+        self.assertEqual(res.slice_cycles(2), ())
+        self.assertEqual(res.slice_cycles(99), ())
+
+    def test_two_cycles_sharing_an_edge(self):
+        res = compute_persistence(_shared_edge_two_cycles())
+        self.assertEqual(res.betti_at(1), (1, 2))
+        cycles = res.slice_cycles(1)
+        self.assertEqual(len(cycles), 2)
+        edge_sets = [set(res.chain_vertices(sc.cycle)) for sc in cycles]
+        # Every cycle is closed and uses only edges present at t=1.
+        for es in edge_sets:
+            parity = {}
+            for a, b in es:
+                parity[a] = parity.get(a, 0) ^ 1
+                parity[b] = parity.get(b, 0) ^ 1
+            self.assertFalse(any(parity.values()))
+        # Mod boundaries (none here) the two generators are independent:
+        # their symmetric difference is the non-empty third cycle.
+        xor = edge_sets[0] ^ edge_sets[1]
+        self.assertTrue(xor)
+        # The two returned generators are closed and independent; their
+        # symmetric difference is the third (dependent) cycle of the
+        # hand count, one of {(0,1),(0,2),(1,2)}, {(1,2),(1,3),(2,3)},
+        # {(0,1),(0,2),(1,3),(2,3)}.
+        hand_cycles = [
+            {(0, 1), (0, 2), (1, 2)},
+            {(1, 2), (1, 3), (2, 3)},
+            {(0, 1), (0, 2), (1, 3), (2, 3)},
+        ]
+        self.assertIn(xor, hand_cycles)
+        self.assertTrue(all(es in hand_cycles for es in edge_sets))
+        # Both classes are essential (never filled).
+        self.assertTrue(all(sc.essential for sc in cycles))
+        self.assertTrue(all(sc.homology_chain is None for sc in cycles))
+
+    def test_shared_edge_cycles_then_filled(self):
+        data = _shared_edge_two_cycles() + [
+            ((0, 1, 2), 2), ((1, 2, 3), 2),
+        ]
+        res = compute_persistence(data)
+        self.assertEqual(len(res.slice_cycles(1)), 2)
+        self.assertEqual(res.slice_cycles(2), ())
+        finite = [b for b in res.h1_bars if b.finite]
+        self.assertEqual(len(finite), 2)
+
+    def test_same_value_all_filled_batch(self):
+        # Vertices, edges and the filling triangle all at t=0: the H1
+        # class is born and dies inside one batch, so after the batch it
+        # does not occupy the dimension.
+        data = [
+            ((0,), 0), ((1,), 0), ((2,), 0),
+            ((0, 1), 0), ((0, 2), 0), ((1, 2), 0),
+            ((0, 1, 2), 0),
+        ]
+        res = compute_persistence(data)
+        (bar,) = res.h1_bars
+        self.assertTrue(bar.zero_length)
+        self.assertEqual(res.betti_at(0), (1, 0))
+        self.assertEqual(res.slice_cycles(0), ())
+
+    def test_square_batch_boundary_then_fill(self):
+        res = compute_persistence(_square_filled_at_two())
+        (sc,) = res.slice_cycles(1)
+        # The generator at t=1 is exactly the 4 boundary edges; the
+        # diagonal and triangles only exist from t=2 on.
+        self.assertEqual(
+            sorted(res.chain_vertices(sc.cycle)),
+            [(0, 1), (0, 3), (1, 2), (2, 3)],
+        )
+        self.assertEqual(
+            [sc.cycle for sc in res.slice_cycles(1.5)],
+            [sc.cycle for sc in res.slice_cycles(1)],
+        )
+        self.assertEqual(res.slice_cycles(2), ())
+
+    def test_essential_ring(self):
+        data = ref.triangle_ring_example()[:-1]  # never filled
+        res = compute_persistence(data)
+        (sc,) = res.slice_cycles(7)
+        self.assertTrue(sc.essential)
+        self.assertEqual(sc.death, INF)
+        self.assertIsNone(sc.homology_chain)
+        self.assertIsNone(sc.bar.death_index)
+
+    def test_correspondence_with_alive_bars(self):
+        res = compute_persistence(ref.two_rings_one_filled())
+        for t in (0, 1, 2, 10):
+            alive = {
+                b.birth_index for b in res.h1_bars if b.alive_at(t)
+            }
+            matched = {sc.bar.birth_index for sc in res.slice_cycles(t)}
+            self.assertEqual(matched, alive)
+
+    def test_bad_threshold_rejected(self):
+        res = compute_persistence(ref.triangle_ring_example())
+        for bad in (float("nan"), INF, -INF, True, "1", None):
+            with self.assertRaises(PersistenceInputError) as ctx:
+                res.slice_cycles(bad)
+            self.assertEqual(ctx.exception.reason, "bad_threshold")
+
+
+class TestSliceCyclesIndependentCheck(unittest.TestCase):
+    """Cross-check slices against a boundary matrix rebuilt from scratch
+    (vertex data only, GF(2) rank via tests/reference.py)."""
+
+    def _check_slice(self, res, data, t):
+        cells = res.cells
+        cycles = res.slice_cycles(t)
+        # Independent slice boundary data.
+        edges = {}  # vertices -> filtration, only edges present at t
+        tri_bounds = []
+        for verts, f in data:
+            if f > t:
+                continue
+            if len(verts) == 2:
+                edges[tuple(verts)] = f
+            elif len(verts) == 3:
+                a, b, c = verts
+                tri_bounds.append(
+                    frozenset([(b, c), (a, c), (a, b)])
+                )
+        rank_b1 = ref.gf2_rank(tri_bounds)
+        # 1. every returned cycle is closed and lies inside the slice
+        # 2. generators are independent modulo boundaries
+        # 3. their number equals the independently computed beta1
+        cycle_vecs = []
+        for sc in cycles:
+            vec = set(res.chain_vertices(sc.cycle))
+            self.assertTrue(vec)
+            self.assertLessEqual(
+                max(cells[i].filtration for i in sc.cycle), t,
+                "cycle uses an edge from the future",
+            )
+            self.assertTrue(set(vec) <= set(edges))
+            parity = {}
+            for a, b in vec:
+                parity[a] = parity.get(a, 0) ^ 1
+                parity[b] = parity.get(b, 0) ^ 1
+            self.assertFalse(any(parity.values()), "cycle not closed")
+            cycle_vecs.append(frozenset(vec))
+            # Correspondence: the matched bar is alive exactly now.
+            self.assertTrue(sc.bar.alive_at(t))
+            self.assertEqual(sc.essential, sc.bar.death_index is None)
+            if sc.essential:
+                self.assertIsNone(sc.homology_chain)
+                self.assertIsNone(sc.residual_chain)
+            else:
+                # Trackable homology-equivalent transformation:
+                # d(homology_chain)
+                #   == cycle XOR birth_chain XOR residual_chain,
+                # with residual a cycle of strictly earlier edges.
+                residual = set(res.chain_vertices(sc.residual_chain))
+                rparity = {}
+                for a, b in residual:
+                    rparity[a] = rparity.get(a, 0) ^ 1
+                    rparity[b] = rparity.get(b, 0) ^ 1
+                self.assertFalse(any(rparity.values()))
+                self.assertTrue(
+                    all(i < sc.bar.birth_index for i in sc.residual_chain)
+                )
+                produced = set()
+                for ti in sc.homology_chain:
+                    a, b, c = cells[ti].vertices
+                    produced.symmetric_difference_update(
+                        [(b, c), (a, c), (a, b)]
+                    )
+                expect = (
+                    set(vec)
+                    ^ set(res.chain_vertices(sc.bar.birth_chain))
+                    ^ residual
+                )
+                self.assertEqual(produced, expect)
+        indep = (
+            ref.gf2_rank(tri_bounds + cycle_vecs) - rank_b1
+        )
+        self.assertEqual(indep, len(cycles), "cycles dependent mod boundaries")
+        self.assertEqual(len(cycles), ref.betti_ranks(data, t)[1])
+
+    def test_fixed_examples(self):
+        datasets = [
+            ref.triangle_ring_example(),
+            ref.two_rings_one_filled(),
+            ref.filled_grid_with_hole(),
+            _shared_edge_two_cycles(),
+            _shared_edge_two_cycles() + [((0, 1, 2), 2), ((1, 2, 3), 2)],
+            _square_filled_at_two(),
+        ]
+        for data in datasets:
+            res = compute_persistence(data)
+            values = sorted({f for _, f in data})
+            probes = sorted(
+                set(values)
+                | {values[0] - 1, values[-1] + 1}
+                | {(a + b) / 2 for a, b in zip(values, values[1:])}
+            )
+            for t in probes:
+                with self.subTest(t=t):
+                    self._check_slice(res, data, t)
+
+    def test_random_complexes(self):
+        rng = random.Random(20260922)
+        for trial in range(12):
+            data = TestRandomizedCrossCheck._random_complex(
+                rng, nverts=7, maxf=4
+            )
+            res = compute_persistence(data)
+            values = sorted({f for _, f in data})
+            for t in values + [values[-1] + 1]:
+                with self.subTest(trial=trial, t=t):
+                    self._check_slice(res, data, t)
+
+    def test_original_pairing_untouched_by_slices(self):
+        # slice_cycles is a read-only query: bars and certificates are
+        # identical before and after slicing (no dynamic deletions).
+        data = ref.filled_grid_with_hole()
+        res = compute_persistence(data)
+        before = list(res.bars)
+        for t in (0, 1, 2, 3, 9):
+            res.slice_cycles(t)
+        self.assertEqual(list(res.bars), before)
+        for bar in res.h1_bars:
+            if bar.finite:
+                self.assertTrue(check_certificate(res, bar))
 
 
 if __name__ == "__main__":

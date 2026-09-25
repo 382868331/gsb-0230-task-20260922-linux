@@ -18,6 +18,7 @@ __all__ = [
     "MAX_SIMPLICES",
     "Cell",
     "Bar",
+    "SliceCycle",
     "Persistence",
     "PersistenceError",
     "PersistenceInputError",
@@ -118,6 +119,61 @@ class _Record(NamedTuple):
     dimension: int
     vertices: tuple[int, ...]
     filtration: float | int
+
+
+@dataclass(frozen=True)
+class SliceCycle:
+    """One H1 generator cycle of a threshold subcomplex.
+
+    Returned by :meth:`Persistence.slice_cycles`.  ``cycle`` is a GF(2)
+    1-chain (sorted ``Persistence.cells`` indices of edges) that lies
+    entirely inside the subcomplex of filtration ``<= threshold`` and
+    generates one H1 class alive at that moment.
+
+    ``bar`` is the original persistence interval this generator
+    corresponds to (matched by birth cell).  For a *finite* bar the
+    slice representative may differ from ``bar.birth_chain`` (the birth
+    cycle can be rewritten by later boundary reductions and may even use
+    edges that only appear after the threshold).  The replacement is
+    kept fully trackable over GF(2) by two chains:
+
+        boundary(homology_chain)
+            == cycle  XOR  bar.birth_chain  XOR  residual_chain
+
+    ``homology_chain`` is a 2-chain of triangles and ``residual_chain``
+    a 1-cycle supported on edges strictly earlier than the birth edge
+    (earlier-born classes -- the change-of-basis freedom of the
+    persistence reduction).  ``residual_chain`` is empty exactly when
+    the slice cycle and the birth cycle are homologous in the full
+    complex.  For an essential bar (``death == INF``) there is no
+    ``birth_chain`` and both witness fields are ``None``.  Zero-length
+    bars never appear here: their birth edge and killing triangle share
+    one filtration value and enter as a single batch, so after the
+    batch the class no longer occupies the dimension.
+    """
+
+    threshold: float | int
+    bar: Bar
+    cycle: tuple[int, ...]
+    homology_chain: tuple[int, ...] | None = None
+    residual_chain: tuple[int, ...] | None = None
+
+    @property
+    def essential(self) -> bool:
+        """True when the matched bar is infinite (never dies)."""
+        return self.bar.death_index is None
+
+    @property
+    def birth(self):
+        return self.bar.birth
+
+    @property
+    def death(self):
+        return self.bar.death
+
+    def __repr__(self) -> str:
+        kind = "essential" if self.essential else f"finite [{self.birth!r}, {self.death!r})"
+        return f"SliceCycle(t={self.threshold!r}, {kind}, cycle={self.cycle})"
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +402,26 @@ class Persistence:
         h0_bars / h1_bars: filtered views.
     """
 
-    def __init__(self, cells: list[Cell], bars: list[Bar]):
+    def __init__(self, cells: list[Cell], bars: list[Bar], *,
+                 _boundary=None, _reduced=None, _combo=None, _owner=None):
         self.cells: tuple[Cell, ...] = tuple(cells)
         self.bars: tuple[Bar, ...] = tuple(bars)
         self.h0_bars: tuple[Bar, ...] = tuple(b for b in bars if b.dimension == 0)
         self.h1_bars: tuple[Bar, ...] = tuple(b for b in bars if b.dimension == 1)
+        # Reduction by-products kept for slice_cycles(); recomputed lazily
+        # when a Persistence was assembled directly by user code.
+        self._boundary = _boundary
+        self._reduced = _reduced
+        self._combo = _combo
+        self._owner = _owner
+
+    def _reduction(self):
+        if self._boundary is None:
+            boundary = _build_boundary(list(self.cells))
+            reduced, combo, owner = _reduce(boundary)
+            self._boundary, self._reduced, self._combo, self._owner = (
+                boundary, reduced, combo, owner)
+        return self._boundary, self._reduced, self._combo, self._owner
 
     # -- queries -----------------------------------------------------------
 
@@ -396,6 +467,132 @@ class Persistence:
     def chain_vertices(self, chain: Iterable[int]) -> list[tuple[int, ...]]:
         """Resolve a chain of cell indices to the listed vertex tuples."""
         return [self.cells[i].vertices for i in chain]
+
+    def slice_cycles(self, threshold) -> tuple[SliceCycle, ...]:
+        """H1 generator cycles of the subcomplex with filtration <= t.
+
+        Every cell with ``filtration <= threshold`` is included; cells
+        sharing one filtration value enter as a single batch (the slice
+        is a prefix of the total filtration order), so no ordering
+        artifact can expose half of a moment.  Returns one
+        :class:`SliceCycle` per H1 class alive at ``threshold``
+        (``len(result) == self.betti_at(threshold)[1]``), each matched
+        to its original persistence interval via ``SliceCycle.bar``.
+
+        Every returned cycle consists solely of edges already present at
+        ``threshold`` -- it is the change-of-basis cycle of the birth
+        edge column in the prefix reduction, never a future death
+        filling chain.  For finite bars whose original birth cycle was
+        rewritten by later reductions, ``homology_chain`` certifies the
+        homology-equivalent transformation.  Essential (infinite) bars
+        and finite bars are both returned, distinguished by
+        ``SliceCycle.essential``; zero-length bars contribute nothing
+        because their birth and death happen in the same batch.
+        """
+        if not _finite_number(threshold):
+            raise PersistenceInputError(
+                "bad_threshold",
+                "threshold must be a finite int or float",
+            )
+        cells = self.cells
+        boundary, reduced, combo, owner = self._reduction()
+        # Prefix of the total order = the whole batch of every
+        # filtration value <= threshold.
+        m = 0
+        for c in cells:
+            if c.filtration <= threshold:
+                m += 1
+            else:
+                break
+        # Column j only ever combines columns < j, so restricting the
+        # reduction to the prefix is exact; boundary columns of the
+        # prefix only reference faces inside the prefix (closure).
+        p_reduced, p_combo, p_owner = _reduce(boundary[:m])
+        bar_by_birth = {b.birth_index: b for b in self.h1_bars}
+        out: list[SliceCycle] = []
+        for j in range(m):
+            if cells[j].dimension != 1 or p_reduced[j] != 0:
+                continue  # not an edge, or a negative (H0-killing) edge
+            if p_owner.get(j) is not None:
+                continue  # class already dead inside the slice
+            mask = p_combo[j]
+            cycle = tuple(i for i in range(j + 1) if (mask >> i) & 1)
+            bar = bar_by_birth[j]
+            homology_chain = residual_chain = None
+            if bar.finite:
+                homology_chain, residual_chain = self._homology_witness(
+                    cycle, bar, reduced, combo, owner)
+            sc = SliceCycle(
+                threshold, bar, cycle, homology_chain, residual_chain)
+            self._check_slice_cycle(sc, m)
+            out.append(sc)
+        return tuple(out)
+
+    def _homology_witness(self, cycle, bar, reduced, combo, owner):
+        """Track the representative swap birth_chain -> cycle.
+
+        Reduces ``x = cycle XOR bar.birth_chain`` against the triangle
+        columns of the full-complex reduction.  Returns ``(S, r)`` with
+        ``dS = x XOR r``; the leftover ``r`` is a 1-cycle whose rows no
+        triangle owns, i.e. a combination of classes born strictly
+        before the bar (empty iff the two representatives are
+        homologous in the full complex).
+        """
+        x = 0
+        for i in cycle:
+            x ^= 1 << i
+        for i in bar.birth_chain:
+            x ^= 1 << i
+        s = 0
+        while x:
+            k = owner.get(x.bit_length() - 1)
+            if k is None:
+                break
+            x ^= reduced[k]
+            s ^= combo[k]
+        triangles = tuple(i for i in range(s.bit_length()) if (s >> i) & 1)
+        residual = tuple(i for i in range(x.bit_length()) if (x >> i) & 1)
+        return triangles, residual
+
+    def _check_slice_cycle(self, sc: SliceCycle, m: int):
+        """Self-check: closure, slice membership, witness boundary."""
+        cells = self.cells
+        boundary, _, _, _ = self._reduction()
+        acc = 0
+        for i in sc.cycle:
+            if i >= m or cells[i].dimension != 1:
+                raise CertificateError(
+                    f"slice cycle uses cell {i} outside the current edge set"
+                )
+            acc ^= boundary[i]
+        if acc:
+            raise CertificateError("slice cycle is not a closed 1-cycle")
+        if sc.homology_chain is not None:
+            target = 0
+            for i in sc.cycle:
+                target ^= 1 << i
+            for i in sc.bar.birth_chain:
+                target ^= 1 << i
+            res_acc = 0
+            for i in sc.residual_chain:
+                if i >= sc.bar.birth_index or cells[i].dimension != 1:
+                    raise CertificateError(
+                        f"residual chain uses cell {i} not earlier than "
+                        f"birth cell {sc.bar.birth_index}")
+                target ^= 1 << i
+                res_acc ^= boundary[i]
+            if res_acc:
+                raise CertificateError("residual chain is not a cycle")
+            acc = 0
+            for i in sc.homology_chain:
+                if cells[i].dimension != 2:
+                    raise CertificateError(
+                        f"homology witness uses non-triangle cell {i}")
+                acc ^= boundary[i]
+            if acc != target:
+                raise CertificateError(
+                    "homology witness boundary != "
+                    "cycle XOR birth_chain XOR residual_chain")
 
     def __repr__(self) -> str:
         return (
@@ -492,7 +689,10 @@ def compute_persistence(simplices) -> Persistence:
             n if b.death_index is None else b.death_index,
         )
     )
-    result = Persistence(cells, bars)
+    result = Persistence(
+        cells, bars,
+        _boundary=boundary, _reduced=reduced, _combo=combo, _owner=owner,
+    )
     # Self-check: every emitted finite H1 certificate must verify.  This
     # costs nothing at the supported scale and turns any internal bug into
     # a loud failure instead of a bad certificate.

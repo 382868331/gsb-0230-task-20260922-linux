@@ -41,6 +41,12 @@ from pershom import compute_persistence, check_certificate, INF
 result = compute_persistence(simplices)
 ```
 
+```python
+from pershom import SliceCycle
+
+cycles = result.slice_cycles(t)   # 阈值子复形的 H1 生成环 + 区间对应
+```
+
 ### 输入
 
 `compute_persistence(simplices)` 接受一个可迭代对象，每项为二元组
@@ -84,6 +90,40 @@ result = compute_persistence(simplices)
 - `check_certificate(result, bar) -> True`：用**只依赖单元顶点数据**的
   组合检查复核证书，失败抛 `CertificateError`。计算内部返回前也会对每条
   有限 H1 自动执行该校验（300 单形规模下成本可忽略）。
+- `result.slice_cycles(t) -> tuple[SliceCycle, ...]`：过滤值 `<= t` 的
+  子复形的一组 **H1 生成环**，详见下节。
+
+### 阈值切片生成环 `slice_cycles(t)`
+
+对过滤值不大于 `t` 的子复形，返回每个存活 H1 类的一个生成环，以及它与
+原持久区间的对应：
+
+- **整批语义**：切片是过滤全序的一段前缀——所有 `filtration <= t` 的
+  单形（包括同值的整批顶点/边/三角形）全部在内，不存在因内部排序而
+  只看见半个时刻的中间态。`len(slice_cycles(t)) == betti_at(t)[1]`。
+- **只用当前边**：每个 `SliceCycle.cycle` 是切片前缀约化中出生边列的
+  换基环（GF(2) 链，`cells` 下标），完全由 `t` 时刻已出现的边组成；
+  绝不拿未来的死亡填充链冒充此刻代表。
+- **区间对应**：`SliceCycle.bar` 即该生成环对应的原持久区间（按出生
+  列匹配）。无穷条（`sc.essential == True`，`death == INF`）与有限条
+  都返回并据此区分；**零长度条不出现**——其出生边与死亡三角形同值
+  同批，整批结束后该类不占当前维数。
+- **可追踪的同调等价变换**：若原出生环 `bar.birth_chain` 在随后边界
+  约化中被替换（切片代表元与出生环不同，甚至出生环含有 `t` 之后才
+  出现的边），有限条附带两个见证链，满足 GF(2) 恒等式
+
+  ```
+  d(homology_chain) == cycle  XOR  bar.birth_chain  XOR  residual_chain
+  ```
+
+  其中 `homology_chain` 是三角形 2-链，`residual_chain` 是只含**严格
+  早于出生边**的边的 1-环（更早出生类的换基自由度；当两代表元在全
+  复形中同调时为空）。本质条无 `birth_chain`，两个见证字段为 `None`。
+  返回前库内逐条自检（闭合性、切片成员、见证恒等式），失败抛
+  `CertificateError`。
+- 阈值 `t` 必须是有限 int/float，否则 `PersistenceInputError`
+  （`reason="bad_threshold"`）。`slice_cycles` 是只读查询，不改变
+  任何条形或证书（不做任意删除的动态同调）。
 
 ### H1 链证书的精确含义
 
@@ -123,6 +163,8 @@ result = compute_persistence(simplices)
 | `too_many_simplices` | 超过 300 个单形（报错定位到第 301 项） |
 | `empty_input` | 空输入 |
 | `bad_threshold` | Betti 查询阈值不是有限数 |
+
+`bad_threshold` 同样适用于 `slice_cycles(t)` 的阈值。
 
 其他固定约定：
 
@@ -170,7 +212,8 @@ result = compute_persistence(simplices)
   多参数/圆形/层级持续同调，也不声称与任何行业文件格式
   （如 dipha/perseus 二进制格式）兼容。
 - 本质类只给 `inf` 终点，不附链（GF(2) 下本质 H1 代表元可由边环另行
-  枚举，当前接口未暴露）。
+  枚举，当前接口未暴露）。任意阈值 `t` 的本质 H1 代表环可经
+  `slice_cycles(t)` 取得（`SliceCycle.essential` 标记）。
 - 链代表元依赖固定全序（同值维数序+顶点序）；换序可能得到不同但同调的
   代表链，配对端点不变。
 
@@ -190,4 +233,14 @@ print(p.betti_at(2))          # (1, 0)
 bar = p.h1_bars[0]            # H1 [1, 2)
 print(p.chain_vertices(bar.birth_chain))  # 三角形的三条边
 print(p.chain_vertices(bar.death_chain))  # 填充三角形
+```
+
+阈值切片生成环：
+
+```python
+for t in (0, 1, 2):
+    for sc in p.slice_cycles(t):
+        print(t, p.chain_vertices(sc.cycle), sc.essential)
+# t=0 / t=2 无存活 H1；t=1 给出一个由三条边组成的环，
+# 对应区间 sc.bar 即 H1 [1, 2)。
 ```

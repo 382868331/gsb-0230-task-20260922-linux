@@ -70,6 +70,24 @@ def show(title, data):
     for t, betti in result.betti_profile():
         print(f"  t={_fmt_value(t):>4s} -> beta0={betti[0]}, beta1={betti[1]}")
 
+    print("\nH1 generator cycles alive in each threshold subcomplex")
+    print("(slice_cycles(t); every cycle uses only edges present at t):")
+    for t, _ in result.betti_profile():
+        cycles = result.slice_cycles(t)
+        if not cycles:
+            print(f"  t={_fmt_value(t):>4s} -> no live H1 class")
+        for sc in cycles:
+            kind = "essential" if sc.essential else (
+                f"bar [{_fmt_value(sc.birth)}, {_fmt_value(sc.death)})")
+            edges = result.chain_vertices(sc.cycle)
+            print(f"  t={_fmt_value(t):>4s} -> {kind}: cycle edges {edges}")
+            if sc.homology_chain or sc.residual_chain:
+                witness = result.chain_vertices(sc.homology_chain)
+                residual = result.chain_vertices(sc.residual_chain)
+                print("         representative swap vs birth_chain tracked by"
+                      f" triangles {witness}, residual earlier-cycle"
+                      f" {residual}")
+
     finite_h1 = [b for b in result.h1_bars if b.finite]
     if finite_h1:
         print("\nFinite H1 certificates (GF(2) chains, verified independently):")

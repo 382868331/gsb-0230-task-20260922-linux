@@ -11,6 +11,8 @@ NaN/+-infinity are rejected). At most 300 simplices are accepted.
 
 Output: a :class:`Persistence` with the filtration-ordered cells, H0/H1 bars
 and GF(2) representative chains for every finite H1 bar.
+``Persistence.slice_cycles(t)`` returns H1 generator cycles of the
+threshold subcomplex (filtration <= t), each matched to its original bar.
 """
 
 from .persistence import (
@@ -18,6 +20,7 @@ from .persistence import (
     Cell,
     INF,
     Persistence,
+    SliceCycle,
     CertificateError,
     PersistenceError,
     PersistenceInputError,
@@ -30,6 +33,7 @@ __all__ = [
     "Cell",
     "INF",
     "Persistence",
+    "SliceCycle",
     "CertificateError",
     "PersistenceError",
     "PersistenceInputError",
@@ -37,4 +41,4 @@ __all__ = [
     "compute_persistence",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
