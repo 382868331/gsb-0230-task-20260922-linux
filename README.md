@@ -5,6 +5,11 @@
 bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条有限 H1 条**
 同时交付可独立检验的**出生环 1-链**与**死亡填充 2-链**证书。
 
+增量能力（v1.1）：在**固定过滤截面**上提供 **H1×H1→H2 杯积查询**——先求
+截面上同调基 H¹ 与余边界空间 B¹，再用顶点全序下的单形
+**Alexander–Whitney 公式**计算两条 1-cocycle 的乘积，得到原始 2-cochain
+并约化为 H² 坐标（不是只比较 Betti 数）。
+
 - Python 版本：**Python 3.14.7**（Linux 原生验证；任何 3.10+ 理论上可运行，
   但只按 3.14.7 交付与验收）
 - 第三方依赖：**无**。安装 Python 后直接运行，不需要 pip install、网络、
@@ -17,20 +22,32 @@ bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条
 pershom/             被测库（核心算法从零实现）
   __init__.py        公开接口
   persistence.py     输入校验、边界矩阵、pivot 约化、配对、证书与验证
+  cohomology.py      固定截面上的 H¹ 基、B¹/B² 空间、Alexander–Whitney 杯积
 tests/
   reference.py       独立参考：GF(2) 高斯消元 + 秩不变量 + 并查集（不 import pershom）
+  reference_cohomology.py  杯积独立参考：直接 GF(2) 消元（不 import pershom）
   test_persistence.py
-demo.py              固定输入演示（正常结果 + 一个真实触发的拒绝）
+  test_cohomology.py
+demo.py              持久同调固定输入演示（正常结果 + 一个真实触发的拒绝）
+demo_iteration.py    杯积演示：环面 vs 同 Betti 数楔合、截面、余边界不变性
 ```
 
 ## 运行命令
 
 ```bash
+# 隔离环境准备（可选但推荐；库只用标准库，venv 内无需 pip install 任何东西）
+python -m venv .venv
+. .venv/bin/activate
+
 # 必要测试（验收命令）
 python -m unittest discover -s tests -v
 
-# 演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep、无预录结果）
+# 持久同调演示（约 0.05 秒；真实计算，无 sleep、无预录结果）
 python demo.py
+
+# 杯积演示（真实离线计算，约 0.01 秒，远低于 90 秒预算；
+# 不依赖账号、密钥、网络、sleep 或预录结果）
+python demo_iteration.py
 ```
 
 ## 公开接口
@@ -100,6 +117,46 @@ result = compute_persistence(simplices)
 `tests/reference.py` 用第二份独立实现重复该检验，并额外把整条条形码与
 “秩不变量四拐角公式 + 独立 GF(2) 高斯消元 + 并查集 β0”逐一比对。
 
+## 杯积查询（H¹×H¹→H²，固定过滤截面）
+
+~~~python
+from pershom import compute_cohomology, check_cup_product
+
+cs = compute_cohomology(simplices, threshold=t)   # threshold=None 表示全部单形
+cs.betti1, cs.betti2        # 截面复形的维数
+cs.h1_basis                 # H¹ 基：每项是 cs.edges 下标元组（1-cocycle）
+cs.b1_basis                 # 余边界空间 B¹ = im δ₀ 的基
+cs.h2_basis                 # H² 基：每项是 cs.triangles 下标元组
+
+cp = cs.cup_product(i, j)            # 基 cocycle i、j 的杯积
+cp = cs.cup_product_of(cyc_a, cyc_b) # 任意两条 1-cocycle（下标元组或 int bitset）
+cp.cocycle_a, cp.cocycle_b           # 两份输入 1-cocycle（边下标）
+cp.raw_product                       # Alexander–Whitney 原始 2-cochain（三角形下标）
+cp.h2_coordinates                    # 在 h2_basis 下的约化坐标
+cp.is_zero                           # 乘积类是否为零（即 raw 是否余边界）
+
+check_cup_product(cs, cp)            # 独立复核：闭性 + 重算 AW 公式 + 坐标一致
+cs.check_closed(cocycle)             # 单独检查闭性（否则抛 not_a_cocycle）
+cs.reduce_h2(cochain)                # 任意 2-cochain 的 H² 坐标
+~~~
+
+- **截面**：输入与 compute_persistence 完全同一契约（同一校验、同一
+  300 单形上限）；截面取 filtration <= threshold 的所有单形，因面值
+  不超过单形值，自动是闭子复形。维数限 0–2。
+- **公式**：对顶点全序 a<b<c 的三角形，
+  (α⌣β)(a,b,c) = α((a,b))·β((b,c))（GF(2)）。
+- **基与不变量**：顶点重标号/换序时基可变化，但乘积的零/非零与配对
+  矩阵的秩不变（测试覆盖）。给任一因子加任意 1-余边界，H² 坐标不变
+  （test_coboundary_invariance）。
+- **验证**：check_cup_product 只用单元顶点数据重算闭性与
+  Alexander–Whitney 公式并逐位比较；tests/reference_cohomology.py 是
+  不 import pershom 的直接 GF(2) 消元参考，对同一 cocycle 重算原始
+  2-cochain 与 H² 坐标并精确比对。
+- **示例**：3×3 网格环面（β=(1,2,1)，乘积矩阵秩 1）与 S¹∨S¹∨S²
+  楔合（β=(1,2,1) 相同，乘积恒零）——Betti 数相同而乘法不同，
+  见 demo_iteration.py。
+- **系数**：仅 GF(2)，不扩展到任意系数环。
+
 ## 错误语义
 
 异常层级：`PersistenceError(ValueError)`，具体输入错误为
@@ -122,7 +179,10 @@ result = compute_persistence(simplices)
 | `duplicate_simplex` | 同一单形重复给出 |
 | `too_many_simplices` | 超过 300 个单形（报错定位到第 301 项） |
 | `empty_input` | 空输入 |
-| `bad_threshold` | Betti 查询阈值不是有限数 |
+| `bad_threshold` | Betti/截面查询阈值不是有限数 |
+| `bad_cochain` | cocycle/cochain 不是 int bitset 或合法下标序列 |
+| `not_a_cocycle` | 杯积输入的 1-cochain 不闭（在某个三角形上 delta 非零） |
+| `bad_basis_index` | H1 基下标越界或类型错误 |
 
 其他固定约定：
 
@@ -165,8 +225,9 @@ result = compute_persistence(simplices)
 - 仅维数 0、1、2（顶点/边/三角形）；无四面体及更高维。
 - 仅 GF(2) 系数；不提供整数/任意域系数、定向符号或同调群扭结信息。
 - 至多 300 个单形；超限拒绝而非分页处理。
-- 只计算普通（非扩张）持续同调的区间与链代表元；不输出
-  persistence diagram 图像、瓶颈/Wasserstein 距离、上同调、zigzag、
+- 只计算普通（非扩张）持续同调的区间与链代表元，以及固定截面上
+  H¹×H¹→H² 的杯积；不输出 persistence diagram 图像、瓶颈/Wasserstein
+  距离、更高维上同调运算（Steenrod 运算、Massey 积等）、zigzag、
   多参数/圆形/层级持续同调，也不声称与任何行业文件格式
   （如 dipha/perseus 二进制格式）兼容。
 - 本质类只给 `inf` 终点，不附链（GF(2) 下本质 H1 代表元可由边环另行

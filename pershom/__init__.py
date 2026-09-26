@@ -13,6 +13,12 @@ Output: a :class:`Persistence` with the filtration-ordered cells, H0/H1 bars
 and GF(2) representative chains for every finite H1 bar.
 """
 
+from .cohomology import (
+    CohomologySlice,
+    CupProduct,
+    check_cup_product,
+    compute_cohomology,
+)
 from .persistence import (
     Bar,
     Cell,
@@ -27,6 +33,10 @@ from .persistence import (
 
 __all__ = [
     "Bar",
+    "CohomologySlice",
+    "CupProduct",
+    "check_cup_product",
+    "compute_cohomology",
     "Cell",
     "INF",
     "Persistence",
@@ -37,4 +47,4 @@ __all__ = [
     "compute_persistence",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
