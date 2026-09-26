@@ -325,3 +325,102 @@ def two_rings_one_filled():
             simp.append(((a, b), 1))
     simp.append(((10, 11, 12), 2))
     return simp
+
+
+# ---------------------------------------------------------------------------
+# Cohomology / cup-product reference (independent, set-based GF(2) algebra)
+# ---------------------------------------------------------------------------
+
+def slice_cells(raw_simplices, t):
+    """Vertices, edges, triangles of the t-subcomplex (sorted tuples)."""
+    vo = _normalise(raw_simplices)
+    verts = sorted({k[1] for k, f in vo.items() if k[0] == 0 and f <= t})
+    edges = sorted({k[1] for k, f in vo.items() if k[0] == 1 and f <= t})
+    tris = sorted({k[1] for k, f in vo.items() if k[0] == 2 and f <= t})
+    return verts, edges, tris
+
+
+def betti_ranks_2(raw_simplices, t):
+    """(beta0, beta1, beta2) of the t-subcomplex by pure rank-nullity."""
+    vo = _normalise(raw_simplices)
+    V = [k for k in vo if k[0] == 0 and vo[k] <= t]
+    E = [k for k in vo if k[0] == 1 and vo[k] <= t]
+    F = [k for k in vo if k[0] == 2 and vo[k] <= t]
+    d1 = [edge_boundary(k[1]) for k in E]
+    d2 = [triangle_boundary(k[1]) for k in F]
+    r1 = gf2_rank(d1)
+    r2 = gf2_rank(d2)
+    return len(V) - r1, len(E) - r1 - r2, len(F) - r2
+
+
+def coboundary_1_images(raw_simplices, t):
+    """B^2 = im(delta_1): for each edge, the set of triangles containing it."""
+    _, edges, tris = slice_cells(raw_simplices, t)
+    out = []
+    for e in edges:
+        star = frozenset(
+            tr for tr in tris
+            if e in ((tr[0], tr[1]), (tr[0], tr[2]), (tr[1], tr[2]))
+        )
+        if star:
+            out.append(star)
+    return out
+
+
+def gf2_in_span(target, vectors):
+    """True iff the GF(2) vector 'target' (a set) lies in span(vectors)."""
+    pivots = {}
+    for vec in vectors:
+        v = frozenset(vec)
+        while v:
+            p = max(v)
+            if p in pivots:
+                v = v.symmetric_difference(pivots[p])
+            else:
+                pivots[p] = v
+                break
+    v = frozenset(target)
+    while v:
+        p = max(v)
+        if p in pivots:
+            v = v.symmetric_difference(pivots[p])
+        else:
+            return False
+    return True
+
+
+def reference_cup_product(raw_simplices, t, left_edges, right_edges):
+    """Independent Alexander-Whitney cup product on the t-slice.
+
+    Returns (raw_triangles, is_zero) where raw_triangles is the set of
+    triangles (u, v, w) with left(u, v) == right(v, w) == 1 and is_zero
+    tells whether that 2-cochain is a coboundary (checked by direct GF(2)
+    Gaussian elimination against im(delta_1)).  Raises AssertionError if
+    either input cochain fails the closedness check.
+    """
+    _, _, tris = slice_cells(raw_simplices, t)
+    left = {tuple(sorted(e)) for e in left_edges}
+    right = {tuple(sorted(e)) for e in right_edges}
+    for (a, b, c) in tris:
+        faces = ((a, b), (a, c), (b, c))
+        assert sum(f in left for f in faces) % 2 == 0, "left not closed"
+        assert sum(f in right for f in faces) % 2 == 0, "right not closed"
+    raw = {
+        (a, b, c) for (a, b, c) in tris
+        if (a, b) in left and (b, c) in right
+    }
+    return raw, gf2_in_span(raw, coboundary_1_images(raw_simplices, t))
+
+
+def vertex_star_edges(raw_simplices, t, vertex):
+    """delta_0 of the 0-cochain dual to 'vertex': its incident slice edges."""
+    _, edges, _ = slice_cells(raw_simplices, t)
+    return [e for e in edges if vertex in e]
+
+
+def gf2_matrix_rank(rows):
+    """Rank of a GF(2) matrix given as rows of 0/1 tuples."""
+    return gf2_rank(
+        frozenset(i for i, x in enumerate(row) if x) for row in rows
+    )
+

@@ -5,6 +5,11 @@
 bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条有限 H1 条**
 同时交付可独立检验的**出生环 1-链**与**死亡填充 2-链**证书。
 
+增量能力（v1.1）：在**固定过滤截面**上提供 **H1xH1 -> H2 杯积**查询：
+先求该截面的上同调基（H1、H2）与余边界空间，再用顶点全序下的单形
+Alexander-Whitney 公式求两个 1-cocycle 的乘积，并把原始 2-cochain
+约化为 H2 基下的坐标；不是只比较 Betti 数。
+
 - Python 版本：**Python 3.14.7**（Linux 原生验证；任何 3.10+ 理论上可运行，
   但只按 3.14.7 交付与验收）
 - 第三方依赖：**无**。安装 Python 后直接运行，不需要 pip install、网络、
@@ -17,10 +22,23 @@ bottom pivot）列约化给出 H0、H1 的出生–死亡配对，并为**每条
 pershom/             被测库（核心算法从零实现）
   __init__.py        公开接口
   persistence.py     输入校验、边界矩阵、pivot 约化、配对、证书与验证
+  cohomology.py      截面上同调空间 + Alexander-Whitney 杯积（GF(2)）
 tests/
-  reference.py       独立参考：GF(2) 高斯消元 + 秩不变量 + 并查集（不 import pershom）
+  reference.py       独立参考：GF(2) 高斯消元 + 秩不变量 + 并查集 + 杯积（不 import pershom）
   test_persistence.py
+  test_cohomology.py
 demo.py              固定输入演示（正常结果 + 一个真实触发的拒绝）
+demo_iteration.py    杯积演示：环面 vs 楔合（同 Betti、不同乘法）
+```
+
+## 环境准备（隔离 venv）
+
+不需要任何第三方包；venv 仅用于隔离，非必需：
+
+```bash
+python3.14 -m venv .venv        # 或任何指向 Python 3.14.7 的解释器
+. .venv/bin/activate
+# 无需 pip install：requirements.txt 只有注释，标准库即可
 ```
 
 ## 运行命令
@@ -31,6 +49,9 @@ python -m unittest discover -s tests -v
 
 # 演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep、无预录结果）
 python demo.py
+
+# 杯积增量演示（真实离线计算，实测约 0.1 秒，远低于 90 秒预算）
+python demo_iteration.py
 ```
 
 ## 公开接口
@@ -99,6 +120,61 @@ result = compute_persistence(simplices)
 即：`∂(death_chain) = birth_chain`、`∂(birth_chain) = 0`。测试中的
 `tests/reference.py` 用第二份独立实现重复该检验，并额外把整条条形码与
 “秩不变量四拐角公式 + 独立 GF(2) 高斯消元 + 并查集 β0”逐一比对。
+
+## 截面上同调与杯积（v1.1 增量）
+
+```python
+from pershom import cohomology_slice, cup_product
+
+sl = cohomology_slice(simplices, t)     # simplices 与 compute_persistence 同一契约
+res = cup_product(sl, cocycle_a, cocycle_b)
+```
+
+### cohomology_slice(simplices, threshold)
+
+- 输入校验复用 compute_persistence 的同一解析器（同一批 reason）；
+  threshold 须为有限 int/float（否则 bad_threshold）。
+- 截面 = 过滤值 <= threshold 的子复形；输出 CohomologySlice：
+  - vertices / edges / triangles：截面单元（按顶点元组排序）；
+  - h1_basis / h2_basis：H1、H2 的 GF(2) 基，每个基元是一个
+    cocycle（边/三角形的元组）；b0 / b1 / b2 为截面 Betti 数；
+  - 内部同时计算余边界空间 B1 = im δ0、B2 = im δ1（GF(2) 消元），
+    杯积坐标即“模 B2”的商坐标。
+
+### cup_product(slice, left, right)
+
+- left / right：1-cocycle，给法为顶点对可迭代对象，如
+  [(0, 3), (1, 4)]；对内顺序无所谓，但必须都是截面内的边且
+  **GF(2) 闭合**（在每个三角形上余边界为 0），否则拒绝。
+- 乘积用顶点全序（顶点 id 升序）下的 Alexander-Whitney 公式：
+  对三角形 (u, v, w)（u<v<w），(a⌣b)([u,v,w]) = a([u,v])·b([v,w])。
+- 返回 CupProductResult：
+  - left / right：规范化后的两个输入 cocycle；
+  - raw：原始 2-cochain（取值为 1 的三角形元组）；
+  - coordinates：乘积类在 slice.h2_basis 下的 GF(2) 坐标；
+  - is_zero：乘积类是否为 0（即 raw 是否落在 B2 内）。
+- 闭性在求积前逐条检查；给任一输入加上余边界（顶点星形 δ0）后
+  坐标不变——测试对此逐顶点验证。
+- 顶点重标号会改变基与代表元，但乘积矩阵的**零/非零格局与秩**不变
+  （测试用随机置换验证）。
+
+### 杯积新增 reason
+
+| reason | 触发条件 |
+|---|---|
+| bad_threshold | 截面阈值不是有限数 |
+| bad_cocycle | cocycle 不是顶点对可迭代对象（bool 顶点同样拒绝） |
+| edge_not_in_slice | cocycle 用了截面中不存在的边 |
+| cocycle_not_closed | 余边界在某个三角形上非零（报错定位到该三角形） |
+
+### 验证方式
+
+- tests/test_cohomology.py：7 顶点环面三角化（betti (1,2,1)，交形式
+  [[0,1],[1,0]]，乘积非零）与楔合 S1∨S1∨S2（同样 betti (1,2,1)，乘积
+  全零）对照；每个乘积都与 tests/reference.py 中**独立的集合版
+  GF(2) 高斯消元**（不 import pershom）逐对交叉验证 raw 与零/非零。
+- 原持久配对接口（compute_persistence、check_certificate 等）
+  完全保留，基线测试原样通过。
 
 ## 错误语义
 
@@ -171,6 +247,9 @@ result = compute_persistence(simplices)
   （如 dipha/perseus 二进制格式）兼容。
 - 本质类只给 `inf` 终点，不附链（GF(2) 下本质 H1 代表元可由边环另行
   枚举，当前接口未暴露）。
+- 杯积仅限 H1×H1→H2、GF(2) 系数、至多二维复形；不扩展到任意系数环、
+  更高次乘积或 Steenrod 运算；基随顶点次序变化，只有零/非零与秩
+  是不变量。
 - 链代表元依赖固定全序（同值维数序+顶点序）；换序可能得到不同但同调的
   代表链，配对端点不变。
 

@@ -24,17 +24,27 @@ from .persistence import (
     check_certificate,
     compute_persistence,
 )
+from .cohomology import (
+    CohomologySlice,
+    CupProductResult,
+    cohomology_slice,
+    cup_product,
+)
 
 __all__ = [
     "Bar",
     "Cell",
+    "CohomologySlice",
+    "CupProductResult",
     "INF",
     "Persistence",
     "CertificateError",
     "PersistenceError",
     "PersistenceInputError",
     "check_certificate",
+    "cohomology_slice",
     "compute_persistence",
+    "cup_product",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
